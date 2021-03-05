@@ -1,6 +1,7 @@
 declare var SpreadSheetsSQL: any;
 const PROPERTY_KEY_SYNC_TOKEN: string = 'SYNC_TOKEN';
 const PROPERTY_KEY_LINE_TOKEN: string = 'LINE_TOKEN';
+const PROPERTY_KEY_ENDPOINT_SLACK_WEBHOOK = 'ENDPOINT_SLACK_WEBHOOK';
 const FILE_ID_EVENTS: string = '1PVVkZUjD6wSw-kIGp1BpnLm_TsaYCWEtUEYEwE8QAaI';
 const ENDPOINT_LINE_NOTIFY_API: string = 'https://notify-api.line.me/api/notify';
 
@@ -10,20 +11,26 @@ var nextSyncToken: string = '';
 function calendarUpdated(event: GoogleAppsScript.Events.CalendarEventUpdated): void {
     console.time('----- calendarUpdated -----');
 
-    var calendarId: string = event.calendarId;
+    try {
+        var calendarId: string = event.calendarId;
 
-    var options = {
-        syncToken: getSyncToken(calendarId)
-    };
-    var recentlyUpdatedEvents: GoogleAppsScript.Calendar.Schema.Event[] = getRecentlyUpdatedEvents(calendarId, options);
+        var options = {
+            syncToken: getSyncToken(calendarId)
+        };
+        var recentlyUpdatedEvents: GoogleAppsScript.Calendar.Schema.Event[] = getRecentlyUpdatedEvents(calendarId, options);
 
-    var message: string = generateMessage(recentlyUpdatedEvents);
+        var message: string = generateMessage(recentlyUpdatedEvents);
 
-    notifyLINE(message);
+        notifyLINE(message);
 
-    refleshStoredEvents(calendarId);
+        refleshStoredEvents(calendarId);
 
-    properties.setProperty(PROPERTY_KEY_SYNC_TOKEN, nextSyncToken);
+        properties.setProperty(PROPERTY_KEY_SYNC_TOKEN, nextSyncToken);
+    } catch (e) {
+        console.error(e);
+        var error: string = 'カレンダー変更イベントの処理中にエラーが発生しました。\n\n calendarId=' + calendarId + '\nerror=' + e.message
+        notifySlack(error);
+    }
 
     console.timeEnd('----- calendarUpdated -----');
 }
@@ -150,6 +157,19 @@ function refleshStoredEvents(calendarId: string): void {
     SpreadsheetApp.openById(FILE_ID_EVENTS).getSheetByName('DATA').getDataRange().setNumberFormat('@');
 
     console.timeEnd('----- refleshStoredEvents -----');
+}
+
+function notifySlack(message: string): void {
+    console.time('----- notifySlack -----');
+
+    var options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
+        method: 'post',
+        payload: JSON.stringify({'text': message}),
+        muteHttpExceptions: true
+    };
+    UrlFetchApp.fetch(properties.getProperty(PROPERTY_KEY_ENDPOINT_SLACK_WEBHOOK), options);
+
+    console.timeEnd('----- notifySlack -----');
 }
 
 class StoredEvent {
