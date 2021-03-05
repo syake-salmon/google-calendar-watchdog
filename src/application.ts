@@ -72,11 +72,12 @@ function generateMessage(events: GoogleAppsScript.Calendar.Schema.Event[]): stri
                 messages.push('Googleカレンダーの予定が削除されました。');
             }
         } else {
+            var start: string = (events[i].start.dateTime) ? events[i].start.dateTime : events[i].start.date;
+            var end: string = (events[i].end.dateTime) ? events[i].end.dateTime : events[i].end.date;
+
             if (storedEvent) {
-                messages.push('Googleカレンダーの予定が更新されました。\n\nタイトル：' + storedEvent.summary + '\n開始：' + dateToString(storedEvent.start) + '\n終了：' + dateToString(storedEvent.end));
+                messages.push('Googleカレンダーの予定が更新されました。\n\nタイトル：' + events[i].summary + '\n開始：' + dateToString(start) + '\n終了：' + dateToString(end));
             } else {
-                var start: string = (events[i].start.dateTime) ? events[i].start.dateTime : events[i].start.date;
-                var end: string = (events[i].end.dateTime) ? events[i].end.dateTime : events[i].end.date;
                 messages.push('Googleカレンダーに予定が登録されました。\n\nタイトル：' + events[i].summary + '\n開始：' + dateToString(start) + '\n終了：' + dateToString(end));
             }
         }
@@ -164,7 +165,7 @@ function notifySlack(message: string): void {
 
     var options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
         method: 'post',
-        payload: JSON.stringify({'text': message}),
+        payload: JSON.stringify({ 'text': message }),
         muteHttpExceptions: true
     };
     UrlFetchApp.fetch(properties.getProperty(PROPERTY_KEY_ENDPOINT_SLACK_WEBHOOK), options);
