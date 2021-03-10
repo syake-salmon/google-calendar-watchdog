@@ -1,7 +1,7 @@
 declare var SpreadSheetsSQL: any;
 const PROPERTY_KEY_SYNC_TOKEN: string = 'SYNC_TOKEN';
 const PROPERTY_KEY_LINE_TOKEN: string = 'LINE_TOKEN';
-const PROPERTY_KEY_ENDPOINT_SLACK_WEBHOOK = 'ENDPOINT_SLACK_WEBHOOK';
+const PROPERTY_KEY_SLACK_WEBHOOK_ENDPOINT = 'SLACK_WEBHOOK_ENDPOINT';
 const FILE_ID_EVENTS: string = '1PVVkZUjD6wSw-kIGp1BpnLm_TsaYCWEtUEYEwE8QAaI';
 const ENDPOINT_LINE_NOTIFY_API: string = 'https://notify-api.line.me/api/notify';
 
@@ -28,8 +28,12 @@ function calendarUpdated(event: GoogleAppsScript.Events.CalendarEventUpdated): v
         properties.setProperty(PROPERTY_KEY_SYNC_TOKEN, nextSyncToken);
     } catch (e) {
         console.error(e);
-        var error: string = 'カレンダー変更イベントの処理中にエラーが発生しました。\n\n calendarId=' + calendarId + '\nerror=' + e.message
-        notifySlack(error);
+        var slackOptions: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
+            method: 'post',
+            payload: JSON.stringify({ 'username': 'google-calendar-watchdog', 'text': 'カレンダー変更通知処理中にエラーが発生しました。<https://script.google.com/home/projects/1VE5tPlGhiNWUOsJje9HYVOjX4BjvK-VLx5_8-LsV7A2StRMUsu3qXWuM/executions|[ログ]>\nERROR=>' + e.message }),
+            muteHttpExceptions: true
+        };
+        callExternalAPI(properties.getProperty(PROPERTY_KEY_SLACK_WEBHOOK_ENDPOINT), slackOptions);
     }
 
     console.timeEnd('----- calendarUpdated -----');
@@ -138,7 +142,7 @@ function notifyLINE(message: string): void {
         headers: { 'Authorization': 'Bearer ' + token },
         muteHttpExceptions: true
     };
-    UrlFetchApp.fetch(ENDPOINT_LINE_NOTIFY_API, options);
+    callExternalAPI(ENDPOINT_LINE_NOTIFY_API, options);
 
     console.timeEnd('----- notifyLINE -----');
 }
@@ -160,17 +164,13 @@ function refleshStoredEvents(calendarId: string): void {
     console.timeEnd('----- refleshStoredEvents -----');
 }
 
-function notifySlack(message: string): void {
-    console.time('----- notifySlack -----');
+function callExternalAPI(endpoint: string, options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions) {
+    console.time('----- callExternalAPI -----');
 
-    var options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
-        method: 'post',
-        payload: JSON.stringify({ 'text': message }),
-        muteHttpExceptions: true
-    };
-    UrlFetchApp.fetch(properties.getProperty(PROPERTY_KEY_ENDPOINT_SLACK_WEBHOOK), options);
+    var response = UrlFetchApp.fetch(endpoint, options);
 
-    console.timeEnd('----- notifySlack -----');
+    console.timeEnd('----- callExternalAPI -----');
+    return response;
 }
 
 class StoredEvent {
