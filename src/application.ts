@@ -1,31 +1,41 @@
-declare var SpreadSheetsSQL: any;
-const PROPERTY_KEY_SYNC_TOKEN: string = 'SYNC_TOKEN';
 const PROPERTY_KEY_LINE_TOKEN: string = 'LINE_TOKEN';
 const PROPERTY_KEY_SLACK_WEBHOOK_ENDPOINT = 'SLACK_WEBHOOK_ENDPOINT';
-const FILE_ID_EVENTS: string = '1PVVkZUjD6wSw-kIGp1BpnLm_TsaYCWEtUEYEwE8QAaI';
 const ENDPOINT_LINE_NOTIFY_API: string = 'https://notify-api.line.me/api/notify';
 
 var properties: GoogleAppsScript.Properties.Properties = PropertiesService.getScriptProperties();
-var nextSyncToken: string = '';
 
-function calendarUpdated(event: GoogleAppsScript.Events.CalendarEventUpdated): void {
-    console.time('----- calendarUpdated -----');
+interface CalendarEventUpdated {
+    authMode: GoogleAppsScript.Script.AuthMode;
+    calendarId: string;
+    triggerUid: string;
+}
+
+/**
+ * イベントが更新されたとき、対象のCalendarIdとEvent.summaryをコンソールに出力する。
+ */
+function onUpdatedEvent(event: GoogleAppsScript.Events.CalendarEventUpdated): void {
+    console.time('----- onUpdatedEvent -----');
+    console.log(`calendarId: ${event.calendarId}`);
 
     try {
-        var calendarId: string = event.calendarId;
+        getUpdatedEvents(event.calendarId).forEach((e) => {
+            let message: string;
+            if (e.status === "cancelled") {
+                message = `\nGoogleカレンダーの予定が削除されました。`
+            } else {
+                let startDateTime: string;
+                let endDateTime: string;
+                let location: string;
 
-        var options = {
-            syncToken: getSyncToken(calendarId)
-        };
-        var recentlyUpdatedEvents: GoogleAppsScript.Calendar.Schema.Event[] = getRecentlyUpdatedEvents(calendarId, options);
+                startDateTime = new Date(e.start.dateTime).toLocaleString("ja-JP", { timeZone: e.start.timeZone });
+                endDateTime = new Date(e.end.dateTime).toLocaleString("ja-JP", { timeZone: e.end.timeZone });
+                location = e.location == undefined ? "" : e.location;
 
-        var message: string = generateMessage(recentlyUpdatedEvents);
+                message = `\nGoogleカレンダーの予定が更新されました。\n==========\nタイトル：${e.summary}\n開始日時：${startDateTime}\n終了日時：${endDateTime}\n場所      ：${location}`
+            }
 
-        notifyLINE(message);
-
-        refleshStoredEvents(calendarId);
-
-        properties.setProperty(PROPERTY_KEY_SYNC_TOKEN, nextSyncToken);
+            notifyLINE(message);
+        })
     } catch (e) {
         console.error(e);
         var slackOptions: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
@@ -36,102 +46,68 @@ function calendarUpdated(event: GoogleAppsScript.Events.CalendarEventUpdated): v
         callExternalAPI(properties.getProperty(PROPERTY_KEY_SLACK_WEBHOOK_ENDPOINT), slackOptions);
     }
 
-    console.timeEnd('----- calendarUpdated -----');
+    console.timeEnd('----- onUpdatedEvent -----');
 }
 
-function getSyncToken(calendarId: string): string {
-    console.time('----- getSyncToken -----');
+/**
+ * @link https://developers.google.com/calendar/api/v3/reference/events/list?hl=ja#parameters
+ */
+class CalendarQueryOptions {
+    maxResults?: number;
+    syncToken?: string;
+    timeMin?: string;
+}
 
-    var token: string = properties.getProperty(PROPERTY_KEY_SYNC_TOKEN);
-    if (!token) {
-        token = Calendar.Events.list(calendarId, { 'timeMin': (new Date()).toISOString() }).nextSyncToken;
+/**
+ * 引数に指定されたCalendarIdにひもづくイベントのうち、前回取得した時より更新があったイベントのみ取得する。
+ * 過去に一度もイベントを取得していない場合、過去30日分を取得する。
+ *
+ * @param {string} calendarId カレンダーを一意に識別するID
+ * @returns {GoogleAppsScript.Calendar.Schema.Event[]} イベントの一覧（最大100件）
+ */
+function getUpdatedEvents(calendarId: string): GoogleAppsScript.Calendar.Schema.Event[] {
+    console.time('----- getUpdatedEvents -----');
+
+    const properties = PropertiesService.getUserProperties();
+    const key = `syncToken: ${calendarId}`;
+    const syncToken = properties.getProperty(key);
+
+    let options: CalendarQueryOptions = { maxResults: 100 };
+    if (syncToken) {
+        options = { ...options, syncToken: syncToken };
+    } else {
+        options = { ...options, timeMin: getRelativeDate(-30, 0).toISOString() };
     }
 
-    console.timeEnd('----- getSyncToken -----');
-    return token;
-}
+    const events = Calendar.Events?.list(calendarId, options);
 
-function getRecentlyUpdatedEvents(calendarId: string, options: object): GoogleAppsScript.Calendar.Schema.Event[] {
-    console.time('----- getRecentlyUpdatedEvents -----');
-
-    var events: GoogleAppsScript.Calendar.Schema.Events = Calendar.Events.list(calendarId, options);
-    nextSyncToken = events.nextSyncToken;
-
-    console.timeEnd('----- getRecentlyUpdatedEvents -----');
-    return events.items;
-}
-
-function generateMessage(events: GoogleAppsScript.Calendar.Schema.Event[]): string {
-    console.time('----- generateNotifyMessages -----');
-
-    var message: string = '';
-    var messages: string[] = [];
-    for (var i: number = 0; i < events.length; i++) {
-        var status: string = events[i].status;
-        var storedEvent: StoredEvent = searchStoredEventById(events[i].id);
-        if (status == 'cancelled') {
-            if (storedEvent) {
-                messages.push('Googleカレンダーの予定が削除されました。\n\nタイトル：' + storedEvent.summary + '\n開始：' + dateToString(storedEvent.start) + '\n終了：' + dateToString(storedEvent.end));
-            } else {
-                messages.push('Googleカレンダーの予定が削除されました。');
-            }
-        } else {
-            var start: string = (events[i].start.dateTime) ? events[i].start.dateTime : events[i].start.date;
-            var end: string = (events[i].end.dateTime) ? events[i].end.dateTime : events[i].end.date;
-
-            if (storedEvent) {
-                messages.push('Googleカレンダーの予定が更新されました。\n\nタイトル：' + events[i].summary + '\n開始：' + dateToString(start) + '\n終了：' + dateToString(end));
-            } else {
-                messages.push('Googleカレンダーに予定が登録されました。\n\nタイトル：' + events[i].summary + '\n開始：' + dateToString(start) + '\n終了：' + dateToString(end));
-            }
-        }
-    }
-    message = messages.join('\n----------\n');
-
-    console.timeEnd('----- generateNotifyMessages -----');
-    return message;
-}
-
-function searchStoredEventById(id: string): StoredEvent {
-    console.time('----- searchStoredEventById -----');
-
-    var event: StoredEvent = searchStoredEvents('id = ' + id)[0];
-
-    console.timeEnd('----- searchStoredEventById -----');
-    return event;
-}
-
-function searchStoredEvents(filter: string): StoredEvent[] {
-    console.time('----- searchStoredEvents -----');
-
-    var events: StoredEvent[] = [];
-    var result: any[] = SpreadSheetsSQL.open(FILE_ID_EVENTS, 'DATA').select(['id', 'summary', 'start', 'end']).filter(filter).result();
-    for (var i: number = 0; i < result.length; i++) {
-        events.push(new StoredEvent(result[i].id, result[i].summary, result[i].start, result[i].end));
+    if (events?.nextSyncToken) {
+        properties.setProperty(key, events?.nextSyncToken);
     }
 
-    console.timeEnd('----- searchStoredEvents -----');
-    return events;
+    console.timeEnd('----- getUpdatedEvents -----');
+    return events?.items ? events.items : [];
 }
 
-function dateToString(source: string): string {
-    console.time('----- dateToString -----');
-
-    var stringFormat: string = '';
-    var yyyyMMdd: string = String(source).split('T')[0];
-    var hhmm: string = String(source).split('T')[1];
-
-    var yyyy: string = String(yyyyMMdd).split('-')[0];
-    var MM: string = String(yyyyMMdd).split('-')[1];
-    var dd: string = String(yyyyMMdd).split('-')[2];
-    var hh: string = (hhmm) ? String(hhmm).split(':')[0] : '00';
-    var mm: string = (hhmm) ? String(hhmm).split(':')[1] : '00';
-    stringFormat = yyyy + '-' + MM + '-' + dd + ' ' + hh + ':' + mm;
-
-    console.timeEnd('----- dateToString -----');
-    return stringFormat;
+/**
+ * Helper function to get a new Date object relative to the current date.
+ * @param {number} daysOffset The number of days in the future for the new date.
+ * @param {number} hour The hour of the day for the new date, in the time zone of the script.
+ * @return {Date} The new date.
+ */
+function getRelativeDate(daysOffset: number, hour: number): Date {
+    var date = new Date();
+    date.setDate(date.getDate() + daysOffset);
+    date.setHours(hour);
+    date.setMinutes(0);
+    date.setSeconds(0);
+    date.setMilliseconds(0);
+    return date;
 }
 
+/**
+ * 引数で指定されたメッセージをLINEに送信する。
+ */
 function notifyLINE(message: string): void {
     console.time('----- notifyLINE -----');
 
@@ -147,23 +123,6 @@ function notifyLINE(message: string): void {
     console.timeEnd('----- notifyLINE -----');
 }
 
-function refleshStoredEvents(calendarId: string): void {
-    console.time('----- refleshStoredEvents -----');
-
-    SpreadSheetsSQL.open(FILE_ID_EVENTS, 'DATA').deleteRows();
-    var events: GoogleAppsScript.Calendar.Schema.Event[] = Calendar.Events.list(calendarId, { 'timeMin': (new Date()).toISOString() }).items;
-    var storedEvents: StoredEvent[] = [];
-    for (var i: number = 0; i < events.length; i++) {
-        var start: string = (events[i].start.dateTime) ? events[i].start.dateTime : events[i].start.date;
-        var end: string = (events[i].end.dateTime) ? events[i].end.dateTime : events[i].end.date;
-        storedEvents.push(new StoredEvent(events[i].id, events[i].summary, start, end));
-    }
-    SpreadSheetsSQL.open(FILE_ID_EVENTS, 'DATA').insertRows(storedEvents);
-    SpreadsheetApp.openById(FILE_ID_EVENTS).getSheetByName('DATA').getDataRange().setNumberFormat('@');
-
-    console.timeEnd('----- refleshStoredEvents -----');
-}
-
 function callExternalAPI(endpoint: string, options: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions) {
     console.time('----- callExternalAPI -----');
 
@@ -171,18 +130,4 @@ function callExternalAPI(endpoint: string, options: GoogleAppsScript.URL_Fetch.U
 
     console.timeEnd('----- callExternalAPI -----');
     return response;
-}
-
-class StoredEvent {
-    constructor(id: string, summary: string, start: string, end: string) {
-        this.id = id;
-        this.summary = summary;
-        this.start = start;
-        this.end = end;
-    }
-
-    id: string;
-    summary: string;
-    start: string;
-    end: string;
 }
